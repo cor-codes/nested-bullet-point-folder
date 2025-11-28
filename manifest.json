@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
-	"version": "1.0.0",
+	"id": "nested-bullet-point-folder",
+	"name": "Nested Bullet Point Folder",
+	"version": "0.0.1",
 	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
-	"isDesktopOnly": false
+	"description": "Allows for automatically folding bullet points of a certain indentation depth or greater.",
+	"author": "Cor",
+	"authorUrl": "https://github.com/cor-codes",
+	"isDesktopOnly": true
 }

@@ -1,86 +1,173 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+import { foldable, foldEffect } from '@codemirror/language';
+import { EditorView } from '@codemirror/view';
 
-// Remember to rename these classes and interfaces!
-
-interface MyPluginSettings {
-	mySetting: string;
+interface PluginSettings {
+	indentationFoldLevel: number,
+	recursiveFold: boolean,
+	showMethod: {
+		type: 'none' | 'any' | 'tagged',
+		tags: string[]
+	}
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+const DEFAULT_SETTINGS: PluginSettings = {
+	indentationFoldLevel: 8,
+	recursiveFold: true,
+	showMethod: {
+		type: 'none',
+		tags: []
+	}
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+const getCM = (editor: Editor) => (editor as any).cm as EditorView;
+
+const countIntendation = (content: string) => {
+	content = content.replace(/\t/g, '    ');
+
+	const diff = content.length - content.trimStart().length;
+	return diff;
+}
+
+const hasTags = (app: App, file: TFile, ...tagQuery: string[]) => {
+	const mdCache = app.metadataCache.getFileCache(file);
+	if (mdCache == null) return;
+
+	const tags: string[] = [];
+	if (mdCache.frontmatter != null && mdCache.frontmatter.tags != null) {
+		const fmTags = mdCache.frontmatter.tags;
+		if (Array.isArray(fmTags)) {
+			tags.push(...fmTags.map(t => t.toLowerCase()));
+		} else if (typeof fmTags == 'string') {
+			tags.push(fmTags.toLowerCase());
+		}
+	}
+
+	if (mdCache.tags) {
+		tags.push(...mdCache.tags.map(t => t.tag.toLowerCase()));
+	}
+
+	return tagQuery.some(tag => 
+		tags.includes(tag.toLowerCase()) ||
+		tags.includes(`#${tag.toLowerCase()}`)
+	);
+}
+
+export default class NestedIndentFoldPlugin extends Plugin {
+	settings: PluginSettings;
 
 	async onload() {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (_evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, _view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SampleSettingTab(this.app, this));
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
+		this.registerEvent(
+			this.app.workspace.on('file-open', file => {
+				if (file == null) { return; }
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+				const { showMethod } = this.settings;
+				const canDeepIndent = 
+					showMethod.type == 'none' ? false :
+					showMethod.type == 'any' ? true :
+					hasTags(this.app, file, ...showMethod.tags);
+
+				if (!canDeepIndent) { return; }
+
+				setTimeout(() => this.foldDeepListItems(), 50);
+			})
+		);
 	}
 
-	onunload() {
 
+	greatestIndent() {
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (view == null) return 0;
+
+		const { editor } = view;
+		const lineCount = editor.lineCount();
+		let greatestIndent = 0;
+		
+		for (let lineInd = 1; lineInd < lineCount + 1; lineInd++) {
+			const content = editor.getLine(lineInd);
+
+			const indent = countIntendation(content);
+			if (indent > greatestIndent) {
+				greatestIndent = indent;
+			}
+		}
+
+		return greatestIndent;
 	}
+
+	findLine(seen: Set<number>, depth: number) {
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (view == null) return;
+
+		const { editor } = view;
+		const lineCount = editor.lineCount();
+		
+		for (let lineInd = 1; lineInd < lineCount + 1; lineInd++) {
+			const content = editor.getLine(lineInd);
+
+			const indent = countIntendation(content);
+			if (indent < depth) continue;
+			if (!content.trim().startsWith('-')) continue;
+			if (seen.has(lineInd)) continue;
+
+			seen.add(lineInd);
+			return lineInd;
+		}
+
+		return null;
+	}
+
+	foldDeepListItems() {
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (view == null) return;
+
+		if (!this.settings.recursiveFold) {
+			this.foldDeepListItemsAtDepth(this.settings.indentationFoldLevel);
+			return;
+		}
+
+		const endDepth = this.settings.indentationFoldLevel;
+		const startDepth = Math.floor(this.greatestIndent() / 4) * 4;
+		
+		for (let depth = startDepth; depth >= endDepth; depth -= 4) {
+			this.foldDeepListItemsAtDepth(depth);
+		}
+	}
+
+	foldDeepListItemsAtDepth(depth: number) {
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (view == null) return;
+
+		const { editor } = view;
+		const cm = getCM(editor);
+
+		const seen = new Set<number>();
+
+		while (true) {
+			const lineInd = this.findLine(seen, depth);
+			if (lineInd == null) { break; }
+
+			const line = cm.lineBlockAt(cm.state.doc.line(lineInd).from);
+			const range = foldable(cm.state, line.from, line.to)!!;
+
+			if (range == null) { continue; }
+			if (range.from == range.to) { continue; }
+
+			cm.dispatch({
+				effects: [ 
+					foldEffect.of(range)
+				]
+			}); 
+		}
+	}
+
+	fullyUnfold() {}
+
+	onunload() {}
 
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -91,26 +178,10 @@ export default class MyPlugin extends Plugin {
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
 class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+	plugin: NestedIndentFoldPlugin;
 
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: NestedIndentFoldPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -121,14 +192,64 @@ class SampleSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
+			.setName('Indentation Fold Level')
+			.setDesc('At what indent level to automatically fold bullet points')
+			.addSlider(slider => slider
+				.setValue(this.plugin.settings.indentationFoldLevel)
+				.setLimits(0, 20, 4)
+				.onChange(async value => {
+					this.plugin.settings.indentationFoldLevel = value;
 					await this.plugin.saveSettings();
-				}));
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Recursive Fold')
+			.setDesc('Whether or not to recursively fold bullet points after the indentation fold level.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.recursiveFold)
+				.onChange(async value => {
+					this.plugin.settings.recursiveFold = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		let tagsInputEl: HTMLElement | undefined = undefined;
+
+		new Setting(containerEl)
+			.setName('Show Method')
+			.setDesc('What documents should be automatically indent-folded.')
+			.addDropdown(toggle => toggle
+				.addOption('none', 'None')
+				.addOption('any', 'Any')
+				.addOption('tagged', 'Tagged')
+				.setValue(this.plugin.settings.showMethod.type)
+				.onChange(async value => {
+					if (tagsInputEl != null) {
+						tagsInputEl.toggleClass('hidden', value !== 'tagged');
+					}
+
+					this.plugin.settings.showMethod.type = value as 'none' | 'any' | 'tagged';
+					await this.plugin.saveSettings();
+				})
+			)
+			.addText(text => {
+				text
+					.setPlaceholder('comma-separated tags')
+					.setValue(
+						this.plugin.settings.showMethod.tags.join(', ')
+					)
+					.onChange(async tags => {
+						this.plugin.settings.showMethod.tags = tags.split(',')
+							.map(tag => tag.trim())
+							.filter(tag => tag.length > 0);
+						await this.plugin.saveSettings();
+					});
+
+				tagsInputEl = text.inputEl;
+				if (this.plugin.settings.showMethod.type == 'any') {
+					tagsInputEl.addClass('hidden');
+				}
+			});
 	}
 }
