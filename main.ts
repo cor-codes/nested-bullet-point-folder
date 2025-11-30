@@ -59,7 +59,7 @@ export default class NestedIndentFoldPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+		this.addSettingTab(new SettingsTab(this.app, this));
 
 		this.registerEvent(
 			this.app.workspace.on('file-open', file => {
@@ -178,7 +178,7 @@ export default class NestedIndentFoldPlugin extends Plugin {
 	}
 }
 
-class SampleSettingTab extends PluginSettingTab {
+class SettingsTab extends PluginSettingTab {
 	plugin: NestedIndentFoldPlugin;
 
 	constructor(app: App, plugin: NestedIndentFoldPlugin) {
@@ -190,6 +190,7 @@ class SampleSettingTab extends PluginSettingTab {
 		const {containerEl} = this;
 
 		containerEl.empty();
+		containerEl.createEl('h2', { text: 'Behavior' });
 
 		new Setting(containerEl)
 			.setName('Indentation Fold Level')
